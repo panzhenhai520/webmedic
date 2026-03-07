@@ -1,0 +1,32 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xargs cat:*)",
+      "Bash(mkdir:*)",
+      "Bash(curl:*)",
+      "Bash(netstat:*)",
+      "Bash(mysql:*)",
+      "Bash(python:*)",
+      "Bash(test:*)",
+      "Bash(./venv/Scripts/pip install:*)",
+      "Bash(tasklist:*)",
+      "Bash(powershell:*)",
+      "Bash(ls:*)",
+      "Bash(./dolphin_env/Scripts/pip install:*)",
+      "Bash(./dolphin_env/Scripts/python:*)",
+      "Bash(source:*)",
+      "Bash(where ffmpeg:*)",
+      "Bash(Scripts/python:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(tail:*)",
+      "Bash(npm run:*)",
+      "Bash(taskkill:*)",
+      "Bash(/tmp/phase9_plan_summary.txt:*)",
+      "Read(//tmp/**)",
+      "Bash(venvScriptspython.exe:*)",
+      "Bash(venv/Scripts/python.exe:*)",
+      "Bash(sed:*)",
+      "Bash(git add:*)"
+    ]
+  }
+}

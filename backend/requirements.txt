@@ -1,0 +1,28 @@
+# FastAPI 核心
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
+
+# 数据库
+sqlalchemy==2.0.25
+pymysql==1.1.0
+cryptography==41.0.7
+
+# 工具
+python-dotenv==1.0.0
+python-multipart==0.0.6
+requests==2.31.0
+httpx==0.26.0
+orjson==3.9.12
+loguru==0.7.2
+
+# PDF 解析（后续阶段使用）
+pypdf==3.17.4
+pdfplumber==0.10.3
+
+# 异步支持
+aiofiles==23.2.1
+
+# 重试机制
+tenacity==8.2.3

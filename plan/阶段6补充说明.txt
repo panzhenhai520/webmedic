@@ -1,0 +1,33 @@
+第 6 阶段不要改前端接口，也不要改 extract_service 的对外行为。
+只改后端内部实现，把这条链路：extract API -> extract_service -> mock结果
+改成：extract API -> extract_service -> llm_service -> DeepSeek API -> 结构化 JSON -> structured_records 落库
+保证：前端按钮“重新抽取”不用改，数据库表不用改，只是把 mock 数据源换成真实模型返回
+
+对 WebMedic 项目的第 6 阶段做一次“从 mock 切换到真实 DeepSeek API”的改造。
+借鉴d:\code\RHIS下的deepseek_interface.py的代码，对最接近的当前患者病情的病历中的处置方法和用药进行处方合理性分析时，请使用deepseek_interface.py中的代码，特别是里面的提示词。
+
+目标：
+把结构化抽取链路从 mock 返回改成真实调用 DeepSeek API，但必须保留 mock/real 双模式切换能力。
+使用DeepSeek API Key：sk-9cbb533c0d064d2c8fd0c9fea55eb930
+严格要求：
+1. 不修改前端接口路径和页面交互。
+2. 不改变 extract API 的入参和出参结构。
+3. 只改后端第 6 阶段相关实现。
+4. API Key 只允许放在后端 .env 中。
+5. 使用 OpenAI Python SDK 接 DeepSeek，base_url 使用 https://api.deepseek.com。
+6. 使用 response_format={"type":"json_object"} 获取 JSON 输出。
+7. prompt 中必须明确要求输出 json，并提供 JSON 示例。
+8. extract_service 不允许直接写 HTTP 调用，必须通过 llm_service 统一封装。
+9. 返回结果必须先 json.loads，再走 Pydantic schema 校验。
+10. 失败时记录日志并返回明确错误，不允许静默失败。
+
+请完成以下内容：
+1. 更新 config.py，增加 DeepSeek 相关配置项。
+2. 实现 llm_service.py，支持 mock/real 两种模式。
+3. 更新 extract_service.py，接入 llm_service。
+4. 新增或更新 extract_structured_record.txt prompt 文件。
+5. 保持 /api/v1/extract/{session_id} 接口不变。
+6. 给出 .env.example 需要新增的字段。
+7. 给出如何从 LLM_USE_MOCK=true 切换到 false 的说明。
+8. 输出时按文件路径逐个给出完整代码。
+9. 最后补充启动步骤、测试步骤、验证 JSON 输出的方法。
