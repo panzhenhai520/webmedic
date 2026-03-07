@@ -2,65 +2,169 @@
 # -*- coding: utf-8 -*-
 """
 Index Service
-病历索引与检索服务
-第一版使用 mock 数据，预留 PageIndex 接入层
+病历索引与检索服务 - 使用向量数据库
 """
 
-import random
-from typing import List, Tuple
+import logging
+from typing import List, Optional, Tuple
 from sqlalchemy.orm import Session
+
 from app.models.medical_document import MedicalDocument
 from app.models.similar_case_match import SimilarCaseMatch
 from app.models.structured_record import StructuredRecord
+from app.services.vector.factory import VectorDBFactory
+from app.services.embedding_service import get_embedding_service
+from app.core.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class IndexService:
-    """
-    病历索引与检索服务
-    第一版使用 mock 索引和 mock 检索
-    未来可以平滑切换到 PageIndex
-    """
+    """病历索引与检索服务"""
 
-    @staticmethod
-    def rebuild_index(db: Session) -> Tuple[int, int]:
+    def __init__(self):
+        self.vector_db = VectorDBFactory.create()
+        self.embedding_service = get_embedding_service()
+        self.collection_name = settings.QDRANT_COLLECTION
+
+    async def initialize(self) -> None:
+        """初始化索引服务"""
+        try:
+            # 初始化向量数据库
+            await self.vector_db.initialize()
+
+            # 检查集合是否存在，不存在则创建
+            if not await self.vector_db.collection_exists(self.collection_name):
+                vector_size = self.embedding_service.get_vector_size()
+                await self.vector_db.create_collection(
+                    collection_name=self.collection_name,
+                    vector_size=vector_size,
+                    distance="cosine"
+                )
+                logger.info(f"Created collection: {self.collection_name}")
+            else:
+                logger.info(f"Collection already exists: {self.collection_name}")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize index service: {e}")
+            raise
+
+    async def index_document(
+        self,
+        db: Session,
+        document_id: int
+    ) -> None:
         """
-        重建索引
-        第一版为 mock 实现，仅更新文档状态
+        索引单个文档
 
         Args:
             db: 数据库会话
+            document_id: 文档ID
+        """
+        try:
+            # 查询文档
+            document = db.query(MedicalDocument).filter(
+                MedicalDocument.id == document_id
+            ).first()
+
+            if not document:
+                raise ValueError(f"Document not found: {document_id}")
+
+            if not document.parsed_content:
+                raise ValueError(f"Document has no parsed content: {document_id}")
+
+            # 生成向量
+            text = document.parsed_content
+            vector = self.embedding_service.encode_single(text)
+
+            # 构建元数据
+            payload = {
+                "document_id": document.id,
+                "file_name": document.file_name,
+                "file_path": document.file_path,
+                "parsed_content": document.parsed_content[:500],  # 只存储前500字符
+                "upload_time": document.upload_time.isoformat() if document.upload_time else None,
+            }
+
+            # 插入向量数据库
+            await self.vector_db.upsert_vectors(
+                collection_name=self.collection_name,
+                ids=[str(document.id)],
+                vectors=[vector],
+                payloads=[payload]
+            )
+
+            # 更新文档索引状态
+            document.index_status = "done"
+            db.commit()
+
+            logger.info(f"Document indexed successfully: {document_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to index document {document_id}: {e}")
+            # 更新文档索引状态为失败
+            document = db.query(MedicalDocument).filter(
+                MedicalDocument.id == document_id
+            ).first()
+            if document:
+                document.index_status = "failed"
+                db.commit()
+            raise
+
+    async def search_similar_documents(
+        self,
+        query_text: str,
+        limit: int = 5,
+        score_threshold: float = 0.7
+    ) -> List[dict]:
+        """
+        搜索相似文档
+
+        Args:
+            query_text: 查询文本
+            limit: 返回结果数量
+            score_threshold: 相似度阈值
 
         Returns:
-            (total_documents, indexed_count)
+            相似文档列表
         """
-        # 获取所有待索引的文档
-        documents = db.query(MedicalDocument).filter(
-            MedicalDocument.index_status.in_(["pending", "failed"])
-        ).all()
+        try:
+            # 生成查询向量
+            query_vector = self.embedding_service.encode_single(query_text)
 
-        total_documents = len(documents)
-        indexed_count = 0
+            # 搜索向量数据库
+            results = await self.vector_db.search(
+                collection_name=self.collection_name,
+                query_vector=query_vector,
+                limit=limit,
+                score_threshold=score_threshold
+            )
 
-        for doc in documents:
-            # Mock 索引过程
-            # 未来替换为: PageIndex.index_document(doc.file_path)
-            doc.parse_status = "done"
-            doc.index_status = "done"
-            indexed_count += 1
+            # 转换结果格式
+            similar_docs = []
+            for result in results:
+                similar_docs.append({
+                    "document_id": result.payload.get("document_id"),
+                    "file_name": result.payload.get("file_name"),
+                    "similarity_score": result.score,
+                    "content_preview": result.payload.get("parsed_content", "")
+                })
 
-        db.commit()
+            logger.info(f"Found {len(similar_docs)} similar documents")
+            return similar_docs
 
-        return total_documents, indexed_count
+        except Exception as e:
+            logger.error(f"Failed to search similar documents: {e}")
+            raise
 
-    @staticmethod
-    def search_similar_cases(
+    async def search_similar_cases(
+        self,
         db: Session,
         session_id: int,
         top_k: int = 3
     ) -> List[SimilarCaseMatch]:
         """
         检索相似病历
-        第一版为 mock 实现，返回随机结果
 
         Args:
             db: 数据库会话
@@ -70,99 +174,113 @@ class IndexService:
         Returns:
             相似病历匹配结果列表
         """
-        # 获取当前会话的结构化记录
-        structured_record = db.query(StructuredRecord).filter(
-            StructuredRecord.session_id == session_id
-        ).order_by(StructuredRecord.created_at.desc()).first()
+        try:
+            # 获取当前会话的结构化记录
+            structured_record = db.query(StructuredRecord).filter(
+                StructuredRecord.session_id == session_id
+            ).order_by(StructuredRecord.created_at.desc()).first()
 
-        if not structured_record:
-            raise ValueError(f"会话 {session_id} 没有结构化记录，请先执行结构化抽取")
+            if not structured_record:
+                raise ValueError(f"会话 {session_id} 没有结构化记录，请先执行结构化抽取")
 
-        # 获取所有已索引的文档
-        indexed_documents = db.query(MedicalDocument).filter(
-            MedicalDocument.index_status == "done"
-        ).all()
+            # 构建查询文本
+            query_text = f"{structured_record.chief_complaint} {structured_record.present_illness}"
 
-        if not indexed_documents:
-            raise ValueError("没有已索引的病历文档，请先扫描并索引病历文件")
-
-        # 删除该会话的旧匹配记录
-        db.query(SimilarCaseMatch).filter(
-            SimilarCaseMatch.session_id == session_id
-        ).delete()
-        db.commit()
-
-        # Mock 检索逻辑
-        # 未来替换为: PageIndex.search(query_text, top_k)
-        matches = IndexService._mock_search(
-            db=db,
-            session_id=session_id,
-            documents=indexed_documents,
-            structured_record=structured_record,
-            top_k=top_k
-        )
-
-        return matches
-
-    @staticmethod
-    def _mock_search(
-        db: Session,
-        session_id: int,
-        documents: List[MedicalDocument],
-        structured_record: StructuredRecord,
-        top_k: int
-    ) -> List[SimilarCaseMatch]:
-        """
-        Mock 检索实现
-        返回随机选择的文档，并生成模拟的相似度分数和原因
-
-        Args:
-            db: 数据库会话
-            session_id: 会话ID
-            documents: 文档列表
-            structured_record: 结构化记录
-            top_k: 返回结果数量
-
-        Returns:
-            相似病历匹配结果列表
-        """
-        # 随机选择文档
-        selected_docs = random.sample(documents, min(top_k, len(documents)))
-
-        # Mock 原因模板
-        reason_templates = [
-            "主诉和现病史高度相似，症状描述匹配度高",
-            "初步诊断一致，病程发展相似",
-            "体格检查结果相近，临床表现类似",
-            "既往史和过敏史相关，可参考治疗方案",
-            "症状、检查和诊断综合相似度高"
-        ]
-
-        matches = []
-        for rank, doc in enumerate(selected_docs, start=1):
-            # 生成随机相似度分数 (0.75 - 0.95)
-            score = round(random.uniform(0.75, 0.95), 4)
-
-            # 随机选择原因
-            reason = random.choice(reason_templates)
-
-            # 创建匹配记录
-            match = SimilarCaseMatch(
-                session_id=session_id,
-                document_id=doc.id,
-                score=score,
-                reason_text=reason,
-                rank_no=rank
+            # 搜索相似文档
+            similar_docs = await self.search_similar_documents(
+                query_text=query_text,
+                limit=top_k,
+                score_threshold=0.7
             )
-            db.add(match)
-            matches.append(match)
 
-        db.commit()
+            # 删除该会话的旧匹配记录
+            db.query(SimilarCaseMatch).filter(
+                SimilarCaseMatch.session_id == session_id
+            ).delete()
+            db.commit()
 
-        return matches
+            # 创建新的匹配记录
+            matches = []
+            for rank, doc_info in enumerate(similar_docs, start=1):
+                match = SimilarCaseMatch(
+                    session_id=session_id,
+                    document_id=doc_info["document_id"],
+                    score=doc_info["similarity_score"],
+                    reason_text=f"向量相似度: {doc_info['similarity_score']:.4f}",
+                    rank_no=rank
+                )
+                db.add(match)
+                matches.append(match)
+
+            db.commit()
+
+            logger.info(f"Found {len(matches)} similar cases for session {session_id}")
+            return matches
+
+        except Exception as e:
+            logger.error(f"Failed to search similar cases for session {session_id}: {e}")
+            raise
+
+    async def delete_document_index(
+        self,
+        db: Session,
+        document_id: int
+    ) -> None:
+        """
+        删除文档索引
+
+        Args:
+            db: 数据库会话
+            document_id: 文档ID
+        """
+        try:
+            # 从向量数据库删除
+            await self.vector_db.delete_vectors(
+                collection_name=self.collection_name,
+                ids=[str(document_id)]
+            )
+
+            # 更新文档索引状态
+            document = db.query(MedicalDocument).filter(
+                MedicalDocument.id == document_id
+            ).first()
+            if document:
+                document.index_status = "pending"
+                db.commit()
+
+            logger.info(f"Document index deleted: {document_id}")
+
+        except Exception as e:
+            logger.error(f"Failed to delete document index {document_id}: {e}")
+            raise
+
+    async def get_index_stats(self) -> dict:
+        """获取索引统计信息"""
+        try:
+            collection_info = await self.vector_db.get_collection_info(
+                self.collection_name
+            )
+            return {
+                "collection_name": collection_info["name"],
+                "total_vectors": collection_info["vectors_count"],
+                "total_points": collection_info["points_count"],
+                "status": collection_info["status"],
+                "vector_size": collection_info["config"]["vector_size"],
+                "distance_metric": collection_info["config"]["distance"],
+            }
+        except Exception as e:
+            logger.error(f"Failed to get index stats: {e}")
+            raise
+
+    async def close(self) -> None:
+        """关闭服务"""
+        await self.vector_db.close()
 
     @staticmethod
-    def get_similar_cases_by_session(db: Session, session_id: int) -> List[Tuple[SimilarCaseMatch, MedicalDocument]]:
+    def get_similar_cases_by_session(
+        db: Session,
+        session_id: int
+    ) -> List[Tuple[SimilarCaseMatch, MedicalDocument]]:
         """
         获取会话的相似病历匹配结果
 
@@ -185,68 +303,14 @@ class IndexService:
         return matches
 
 
-    @staticmethod
-    def index_single_document(db: Session, document_id: int) -> bool:
-        """
-        索引单个文档
-
-        Args:
-            db: 数据库会话
-            document_id: 文档ID
-
-        Returns:
-            是否成功
-        """
-        document = db.query(MedicalDocument).filter(
-            MedicalDocument.id == document_id
-        ).first()
-
-        if not document:
-            raise ValueError(f"文档不存在: {document_id}")
-
-        # Mock 索引过程
-        # 未来替换为: PageIndex.index_document(document.file_path)
-        document.parse_status = "done"
-        document.index_status = "done"
-        db.commit()
-
-        return True
+# 全局单例
+_index_service: Optional[IndexService] = None
 
 
-# 预留 PageIndex 接入层
-class PageIndexAdapter:
-    """
-    PageIndex 适配器
-    未来接入真实 PageIndex 时实现此类
-    """
-
-    @staticmethod
-    def index_document(file_path: str) -> bool:
-        """
-        索引单个文档
-
-        Args:
-            file_path: 文件路径
-
-        Returns:
-            是否成功
-        """
-        # TODO: 接入 PageIndex
-        # return PageIndex.index(file_path)
-        raise NotImplementedError("PageIndex 尚未接入")
-
-    @staticmethod
-    def search(query_text: str, top_k: int = 3) -> List[dict]:
-        """
-        检索相似文档
-
-        Args:
-            query_text: 查询文本
-            top_k: 返回结果数量
-
-        Returns:
-            检索结果列表
-        """
-        # TODO: 接入 PageIndex
-        # return PageIndex.search(query_text, top_k)
-        raise NotImplementedError("PageIndex 尚未接入")
+async def get_index_service() -> IndexService:
+    """获取索引服务单例"""
+    global _index_service
+    if _index_service is None:
+        _index_service = IndexService()
+        await _index_service.initialize()
+    return _index_service

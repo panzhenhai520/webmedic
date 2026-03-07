@@ -2,132 +2,85 @@
 # -*- coding: utf-8 -*-
 """
 Extract Service
-结构化抽取服务
+结构化抽取服务 - 支持多种抽取器
 """
 
-import os
-import json
 import logging
-from typing import Dict, Any
+from typing import Optional
 from sqlalchemy.orm import Session
-from app.models import StructuredRecord, EncounterSession, TranscriptSegment, Patient
-from app.services.llm_service import llm_service
-from app.schemas.encounter_schema import StructuredRecordData
+
+from app.models.encounter_session import EncounterSession
+from app.models.transcript_segment import TranscriptSegment
+from app.models.structured_record import StructuredRecord
+from app.services.extractors.factory import ExtractorFactory
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
 
 class ExtractService:
-    """结构化抽取服务类"""
+    """抽取服务"""
 
-    @staticmethod
-    def load_prompt_template() -> str:
+    def __init__(self, extractor_type: Optional[str] = None):
         """
-        加载 prompt 模板
-
-        Returns:
-            prompt 模板内容
-        """
-        prompt_file = os.path.join(
-            os.path.dirname(os.path.dirname(__file__)),
-            "prompts",
-            "extract_structured_record.txt"
-        )
-
-        try:
-            with open(prompt_file, "r", encoding="utf-8") as f:
-                return f.read()
-        except Exception as e:
-            logger.error(f"加载 prompt 模板失败: {e}")
-            raise Exception(f"无法加载 prompt 模板: {str(e)}")
-
-    @staticmethod
-    def build_dialogue_text(segments: list) -> str:
-        """
-        构建对话文本
+        初始化抽取服务
 
         Args:
-            segments: 转写片段列表
-
-        Returns:
-            格式化的对话文本
+            extractor_type: 抽取器类型，默认从配置读取
         """
-        dialogue_lines = []
-        for seg in segments:
-            speaker = "医生" if seg.speaker_role == "doctor" else "患者"
-            dialogue_lines.append(f"{speaker}：{seg.transcript_text}")
+        self.extractor = ExtractorFactory.create(extractor_type)
+        self.use_mock = settings.LLM_USE_MOCK
 
-        return "\n".join(dialogue_lines)
-
-    @staticmethod
-    def extract_structured_record(
+    async def extract_from_session(
+        self,
         db: Session,
-        session_id: int
+        session_id: int,
+        extractor_type: Optional[str] = None
     ) -> StructuredRecord:
         """
-        从会话对话中抽取结构化病历
+        从会话中抽取结构化信息
 
         Args:
             db: 数据库会话
             session_id: 会话ID
+            extractor_type: 抽取器类型（可选，用于临时切换抽取器）
 
         Returns:
-            结构化病历对象
-
-        Raises:
-            ValueError: 如果会话不存在或没有对话记录
-            Exception: 抽取失败
+            结构化记录
         """
-        # 验证会话是否存在
-        session = db.query(EncounterSession).filter(
-            EncounterSession.id == session_id
-        ).first()
-        if not session:
-            raise ValueError(f"会话ID {session_id} 不存在")
-
-        # 获取患者信息
-        patient = db.query(Patient).filter(
-            Patient.id == session.patient_id
-        ).first()
-        if not patient:
-            raise ValueError(f"患者ID {session.patient_id} 不存在")
-
-        # 获取对话记录
-        segments = db.query(TranscriptSegment).filter(
-            TranscriptSegment.session_id == session_id
-        ).order_by(TranscriptSegment.created_at).all()
-
-        if not segments:
-            raise ValueError(f"会话 {session_id} 没有对话记录")
-
-        # 构建对话文本
-        dialogue_text = ExtractService.build_dialogue_text(segments)
-
-        # 加载 prompt 模板
-        prompt_template = ExtractService.load_prompt_template()
-
-        # 填充 prompt
-        prompt = prompt_template.format(
-            dialogue_text=dialogue_text,
-            patient_name=patient.patient_name,
-            gender=patient.gender,
-            age=patient.age
-        )
-
-        logger.info(f"开始抽取会话 {session_id} 的结构化病历")
-
         try:
-            # 调用 LLM 服务生成结构化数据
-            logger.debug("准备调用 LLM 服务...")
-            result_json = llm_service.generate_json(prompt=prompt)
+            # 查询会话
+            session = db.query(EncounterSession).filter(
+                EncounterSession.id == session_id
+            ).first()
 
-            logger.debug(f"LLM 返回结果类型: {type(result_json)}")
-            logger.debug(f"LLM 返回结果: {result_json}")
+            if not session:
+                raise ValueError(f"Session not found: {session_id}")
 
-            # 验证返回的 JSON 结构
-            logger.debug("准备验证 JSON 结构...")
-            structured_data = StructuredRecordData(**result_json)
-            logger.debug("JSON 结构验证成功")
+            # 查询所有转写片段
+            segments = db.query(TranscriptSegment).filter(
+                TranscriptSegment.session_id == session_id
+            ).order_by(TranscriptSegment.sequence_number).all()
+
+            if not segments:
+                raise ValueError(f"No transcript segments found for session: {session_id}")
+
+            # 拼接对话文本
+            dialogue_text = "\n".join([
+                f"{seg.speaker}: {seg.text_content}"
+                for seg in segments
+            ])
+
+            # 如果指定了临时抽取器类型，创建新的抽取器
+            extractor = self.extractor
+            if extractor_type:
+                extractor = ExtractorFactory.create(extractor_type)
+
+            # 执行抽取
+            extracted_data = await extractor.extract(
+                dialogue_text=dialogue_text,
+                use_mock=self.use_mock
+            )
 
             # 检查是否已存在该会话的结构化记录
             existing_record = db.query(StructuredRecord).filter(
@@ -136,47 +89,95 @@ class ExtractService:
 
             if existing_record:
                 # 更新现有记录
-                existing_record.raw_json = result_json
-                existing_record.chief_complaint = structured_data.chief_complaint
-                existing_record.present_illness = structured_data.present_illness
-                existing_record.past_history = structured_data.past_history
-                existing_record.allergy_history = structured_data.allergy_history
-                existing_record.physical_exam = structured_data.physical_exam
-                existing_record.preliminary_diagnosis = structured_data.preliminary_diagnosis
-                existing_record.suggested_exams = structured_data.suggested_exams
-                existing_record.warning_flags = structured_data.warning_flags
+                existing_record.chief_complaint = extracted_data.get("chief_complaint", "")
+                existing_record.present_illness = extracted_data.get("present_illness_history", "")
+                existing_record.past_history = extracted_data.get("past_medical_history", "")
+                existing_record.allergy_history = extracted_data.get("allergy_history", "")
+                existing_record.physical_exam = extracted_data.get("physical_examination", "")
+                existing_record.preliminary_diagnosis = extracted_data.get("preliminary_diagnosis", "")
+                existing_record.suggested_exams = extracted_data.get("treatment_plan", "")
+                existing_record.extractor_type = extractor.get_extractor_name()
+                existing_record.raw_json = extracted_data
 
                 db.commit()
                 db.refresh(existing_record)
 
-                logger.info(f"更新会话 {session_id} 的结构化病历成功")
+                logger.info(f"Updated extraction for session {session_id} using {extractor.get_extractor_name()}")
                 return existing_record
             else:
                 # 创建新记录
-                record = StructuredRecord(
+                structured_record = StructuredRecord(
                     session_id=session_id,
                     schema_version="v1.0",
-                    raw_json=result_json,
-                    chief_complaint=structured_data.chief_complaint,
-                    present_illness=structured_data.present_illness,
-                    past_history=structured_data.past_history,
-                    allergy_history=structured_data.allergy_history,
-                    physical_exam=structured_data.physical_exam,
-                    preliminary_diagnosis=structured_data.preliminary_diagnosis,
-                    suggested_exams=structured_data.suggested_exams,
-                    warning_flags=structured_data.warning_flags
+                    raw_json=extracted_data,
+                    chief_complaint=extracted_data.get("chief_complaint", ""),
+                    present_illness=extracted_data.get("present_illness_history", ""),
+                    past_history=extracted_data.get("past_medical_history", ""),
+                    allergy_history=extracted_data.get("allergy_history", ""),
+                    physical_exam=extracted_data.get("physical_examination", ""),
+                    preliminary_diagnosis=extracted_data.get("preliminary_diagnosis", ""),
+                    suggested_exams=extracted_data.get("treatment_plan", ""),
+                    extractor_type=extractor.get_extractor_name()
                 )
 
-                db.add(record)
+                db.add(structured_record)
                 db.commit()
-                db.refresh(record)
+                db.refresh(structured_record)
 
-                logger.info(f"创建会话 {session_id} 的结构化病历成功")
-                return record
+                logger.info(f"Extraction completed for session {session_id} using {extractor.get_extractor_name()}")
+                return structured_record
 
         except Exception as e:
-            logger.error(f"捕获到异常: {type(e).__name__}: {str(e)}", exc_info=True)
-            raise Exception(f"结构化抽取失败: {str(e)}")
+            logger.error(f"Failed to extract from session {session_id}: {e}")
+            db.rollback()
+            raise
+
+    async def compare_extractors(
+        self,
+        db: Session,
+        session_id: int
+    ) -> dict:
+        """
+        对比不同抽取器的结果
+
+        Args:
+            db: 数据库会话
+            session_id: 会话ID
+
+        Returns:
+            对比结果
+        """
+        try:
+            # 使用Instructor抽取
+            instructor_result = await self.extract_from_session(
+                db=db,
+                session_id=session_id,
+                extractor_type="instructor"
+            )
+
+            # 使用LangExtract抽取
+            langextract_result = await self.extract_from_session(
+                db=db,
+                session_id=session_id,
+                extractor_type="langextract"
+            )
+
+            return {
+                "instructor": {
+                    "chief_complaint": instructor_result.chief_complaint,
+                    "present_illness": instructor_result.present_illness,
+                    "preliminary_diagnosis": instructor_result.preliminary_diagnosis,
+                },
+                "langextract": {
+                    "chief_complaint": langextract_result.chief_complaint,
+                    "present_illness": langextract_result.present_illness,
+                    "preliminary_diagnosis": langextract_result.preliminary_diagnosis,
+                }
+            }
+
+        except Exception as e:
+            logger.error(f"Failed to compare extractors for session {session_id}: {e}")
+            raise
 
     @staticmethod
     def get_structured_record(
@@ -204,3 +205,7 @@ class ExtractService:
             raise ValueError(f"会话 {session_id} 的结构化病历不存在")
 
         return record
+
+
+# 创建全局实例
+extract_service = ExtractService()

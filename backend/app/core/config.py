@@ -79,6 +79,56 @@ class Settings(BaseSettings):
         description="LLM API 最大重试次数"
     )
 
+    # 向量数据库配置
+    VECTOR_DB_TYPE: str = Field(
+        default="qdrant",
+        description="向量数据库类型: qdrant/milvus/weaviate"
+    )
+    QDRANT_MODE: str = Field(
+        default="embedded",
+        description="Qdrant模式: embedded/server"
+    )
+    QDRANT_PATH: str = Field(
+        default="./qdrant_storage",
+        description="Qdrant内嵌模式存储路径"
+    )
+    QDRANT_URL: str = Field(
+        default="",
+        description="Qdrant服务器模式URL"
+    )
+    QDRANT_API_KEY: str = Field(
+        default="",
+        description="Qdrant服务器模式API密钥"
+    )
+    QDRANT_COLLECTION: str = Field(
+        default="medical_cases",
+        description="Qdrant集合名称"
+    )
+    QDRANT_VECTOR_SIZE: int = Field(
+        default=1024,
+        description="向量维度（BGE-M3为1024）"
+    )
+
+    # 嵌入模型配置
+    EMBEDDING_MODEL: str = Field(
+        default="BAAI/bge-m3",
+        description="嵌入模型名称"
+    )
+    EMBEDDING_DEVICE: str = Field(
+        default="cpu",
+        description="计算设备: cpu/cuda"
+    )
+    EMBEDDING_BATCH_SIZE: int = Field(
+        default=32,
+        description="嵌入批处理大小"
+    )
+
+    # 抽取器配置
+    EXTRACTOR_TYPE: str = Field(
+        default="instructor",
+        description="抽取器类型: instructor/langextract"
+    )
+
     # 目录配置
     MEDICAL_RECORD_DIR: str = Field(
         default="D:\\webmedic\\backend\\medical_records",

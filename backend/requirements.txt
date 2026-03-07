@@ -26,3 +26,13 @@ aiofiles==23.2.1
 
 # 重试机制
 tenacity==8.2.3
+
+# 向量数据库
+qdrant-client==1.7.0
+
+# 嵌入模型
+FlagEmbedding==1.2.10
+
+# LangExtract (可选)
+# langextract==0.1.5
+
