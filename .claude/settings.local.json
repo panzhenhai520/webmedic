@@ -26,7 +26,13 @@
       "Bash(venvScriptspython.exe:*)",
       "Bash(venv/Scripts/python.exe:*)",
       "Bash(sed:*)",
-      "Bash(git add:*)"
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(gh:*)",
+      "Bash(git remote:*)",
+      "Bash(git branch:*)",
+      "Bash(git push:*)",
+      "Bash(pip install:*)"
     ]
   }
 }

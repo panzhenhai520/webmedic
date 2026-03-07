@@ -95,6 +95,18 @@
       <!-- 数据处理 -->
       <div class="control-section">
         <div class="section-title">数据处理</div>
+        <!-- 抽取器选择 -->
+        <div class="extractor-selector" style="margin-bottom: 10px;">
+          <el-select
+            v-model="selectedExtractor"
+            size="small"
+            placeholder="选择抽取器"
+            style="width: 100%"
+          >
+            <el-option label="📝 Instructor" value="instructor" />
+            <el-option label="🔍 LangExtract" value="langextract" />
+          </el-select>
+        </div>
         <div class="button-group vertical">
           <el-button
             :icon="DocumentCopy"
@@ -190,6 +202,8 @@ const currentAsrEngine = ref('whisper')
 
 // 当前 LLM 模型
 const currentLlmModel = ref('deepseek-chat')
+// 当前抽取器
+const selectedExtractor = ref('instructor')
 
 // 自动处理的防抖定时器
 let autoProcessTimer = null
@@ -410,7 +424,7 @@ const handleExtract = async () => {
     ElMessage.info('正在抽取结构化病历...')
 
     // 调用抽取接口
-    const response = await extractStructuredRecord(workbenchStore.sessionInfo.id)
+    const response = await extractStructuredRecord(workbenchStore.sessionInfo.id, selectedExtractor.value)
 
     // 更新 store 中的结构化病历数据
     workbenchStore.setStructuredRecord(response.data.structured_record)
@@ -496,7 +510,7 @@ const autoProcessDialogue = async () => {
     try {
       // 1. 自动抽取结构化信息
       console.log('自动抽取结构化信息...')
-      const extractResponse = await extractStructuredRecord(workbenchStore.sessionInfo.id)
+      const extractResponse = await extractStructuredRecord(workbenchStore.sessionInfo.id, selectedExtractor.value)
       workbenchStore.setStructuredRecord(extractResponse.data.structured_record)
 
       // 2. 自动生成追问建议
