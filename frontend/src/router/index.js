@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from 'vue-router'
 import DoctorWorkbench from '@/views/DoctorWorkbench.vue'
 import DocumentManagement from '@/views/DocumentManagement.vue'
 import SessionHistory from '@/views/SessionHistory.vue'
+import VocabularyManagement from '@/views/VocabularyManagement.vue'
 
 const routes = [
   {
@@ -26,6 +27,14 @@ const routes = [
     component: DocumentManagement,
     meta: {
       title: 'WebMedic - 病历管理'
+    }
+  },
+  {
+    path: '/vocabulary',
+    name: 'VocabularyManagement',
+    component: VocabularyManagement,
+    meta: {
+      title: 'WebMedic - 医学词库维护'
     }
   }
 ]

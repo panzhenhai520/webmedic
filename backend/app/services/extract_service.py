@@ -60,14 +60,14 @@ class ExtractService:
             # 查询所有转写片段
             segments = db.query(TranscriptSegment).filter(
                 TranscriptSegment.session_id == session_id
-            ).order_by(TranscriptSegment.sequence_number).all()
+            ).order_by(TranscriptSegment.id).all()
 
             if not segments:
                 raise ValueError(f"No transcript segments found for session: {session_id}")
 
             # 拼接对话文本
             dialogue_text = "\n".join([
-                f"{seg.speaker}: {seg.text_content}"
+                f"{seg.speaker_role}: {seg.transcript_text}"
                 for seg in segments
             ])
 

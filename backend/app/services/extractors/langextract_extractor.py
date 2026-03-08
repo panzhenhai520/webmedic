@@ -3,8 +3,13 @@ LangExtract抽取器实现
 """
 import logging
 from typing import Dict, Any
-import re
 
+from app.utils.medical_vocabulary import (
+    extract_body_parts,
+    extract_symptoms,
+    extract_diseases,
+    extract_duration
+)
 from .base import BaseExtractor
 
 logger = logging.getLogger(__name__)
@@ -76,7 +81,7 @@ class LangExtractExtractor(BaseExtractor):
 
     def _generate_mock_json(self, dialogue_text: str) -> Dict[str, Any]:
         """
-        Mock模式：返回简化的结构化数据
+        Mock模式：使用医疗词库从对话文本中提取关键信息
 
         Args:
             dialogue_text: 对话文本
@@ -84,25 +89,55 @@ class LangExtractExtractor(BaseExtractor):
         Returns:
             模拟的结构化数据
         """
-        # 简化的Mock实现
-        symptoms = []
-        if "痛" in dialogue_text:
-            symptoms.append("疼痛")
-        if "晕" in dialogue_text:
-            symptoms.append("头晕")
+        # 使用医疗词库提取信息
+        body_parts = extract_body_parts(dialogue_text)
+        symptoms = extract_symptoms(dialogue_text)
+        diseases = extract_diseases(dialogue_text)
+        duration = extract_duration(dialogue_text)
 
-        # 提取时间
-        day_matches = re.findall(r'(\d+)\s*天', dialogue_text)
-        duration = f"{day_matches[-1]}天" if day_matches else "未提及"
+        # 提取过敏史
+        allergy = "无"
+        if "过敏" in dialogue_text:
+            if "青霉素" in dialogue_text:
+                allergy = "青霉素过敏"
+            elif "头孢" in dialogue_text:
+                allergy = "头孢过敏"
+            else:
+                allergy = "有过敏史（具体待查）"
+
+        # 提取既往史
+        past_history = "无特殊"
+        if diseases:
+            past_history = "、".join(diseases)
+        elif "之前" in dialogue_text and "没有" in dialogue_text:
+            past_history = "既往体健"
+
+        # 构建主诉
+        chief_complaint_parts = []
+        if body_parts:
+            chief_complaint_parts.append("、".join(body_parts))
+        if symptoms:
+            chief_complaint_parts.append("、".join(symptoms))
+        if duration:
+            chief_complaint_parts.append(duration)
+
+        chief_complaint = "，".join(chief_complaint_parts) if chief_complaint_parts else "不适"
+
+        # 构建现病史
+        present_illness = f"患者主诉{chief_complaint}。"
+        if duration and (symptoms or body_parts):
+            parts_desc = "、".join(body_parts) if body_parts else ""
+            symptoms_desc = "、".join(symptoms) if symptoms else ""
+            present_illness = f"患者主诉{duration}前出现{parts_desc}{symptoms_desc}。"
 
         return {
-            "chief_complaint": f"{'、'.join(symptoms) if symptoms else '不适'}{duration}",
-            "present_illness_history": f"患者主诉{duration}前出现{'、'.join(symptoms) if symptoms else '不适'}。",
-            "past_medical_history": "既往体健",
-            "allergy_history": "无" if "过敏" not in dialogue_text else "青霉素过敏",
-            "physical_examination": "查体未见明显异常",
-            "preliminary_diagnosis": "待查",
-            "treatment_plan": "建议进一步检查"
+            "chief_complaint": chief_complaint,
+            "present_illness_history": present_illness,
+            "past_medical_history": past_history,
+            "allergy_history": allergy,
+            "physical_examination": "未提及",
+            "preliminary_diagnosis": "、".join(diseases) if diseases else "待查",
+            "treatment_plan": "未提及"
         }
 
     def get_extractor_name(self) -> str:

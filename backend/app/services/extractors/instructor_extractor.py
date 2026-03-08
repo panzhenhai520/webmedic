@@ -3,9 +3,14 @@ Instructor抽取器实现（现有逻辑）
 """
 import logging
 from typing import Dict, Any
-import re
 
 from app.services.llm_service import LLMService
+from app.utils.medical_vocabulary import (
+    extract_body_parts,
+    extract_symptoms,
+    extract_diseases,
+    extract_duration
+)
 from .base import BaseExtractor
 
 logger = logging.getLogger(__name__)
@@ -47,7 +52,7 @@ class InstructorExtractor(BaseExtractor):
 
     def _generate_mock_json(self, dialogue_text: str) -> Dict[str, Any]:
         """
-        Mock模式：从对话文本中提取关键信息
+        Mock模式：使用医疗词库从对话文本中提取关键信息
 
         Args:
             dialogue_text: 对话文本
@@ -55,59 +60,66 @@ class InstructorExtractor(BaseExtractor):
         Returns:
             模拟的结构化数据
         """
-        # 症状关键词映射
-        symptom_keywords = {
-            "痛": "疼痛", "晕": "头晕", "胀": "肿胀", "麻": "麻木",
-            "酸": "酸痛", "累": "疲劳", "咳": "咳嗽", "烧": "发烧"
-        }
-
-        # 身体部位关键词
-        body_part_keywords = {
-            "颈": "颈部", "头": "头部", "肩": "肩部", "背": "背部",
-            "腰": "腰部", "腿": "腿部", "手": "手部", "脚": "脚部"
-        }
-
-        # 提取症状和部位
-        symptoms = []
-        body_parts = []
-
-        for keyword, symptom in symptom_keywords.items():
-            if keyword in dialogue_text:
-                symptoms.append(symptom)
-
-        for keyword, part in body_part_keywords.items():
-            if keyword in dialogue_text:
-                body_parts.append(part)
-
-        # 提取时间（取最后一次提到的时间）
-        day_patterns = [
-            r'(\d+)\s*天',
-            r'(\d+)\s*日',
-            r'(\d+)\s*周',
-            r'(\d+)\s*个月'
-        ]
-
-        duration = "未提及"
-        for pattern in day_patterns:
-            matches = re.findall(pattern, dialogue_text)
-            if matches:
-                duration = f"{matches[-1]}天"  # 取最后一次提到的
-                break
+        # 使用医疗词库提取信息
+        body_parts = extract_body_parts(dialogue_text)
+        symptoms = extract_symptoms(dialogue_text)
+        diseases = extract_diseases(dialogue_text)
+        duration = extract_duration(dialogue_text)
 
         # 提取过敏史
-        allergy = "无" if "过敏" not in dialogue_text else "青霉素过敏"
+        allergy = "无"
+        if "过敏" in dialogue_text:
+            if "青霉素" in dialogue_text:
+                allergy = "青霉素过敏"
+            elif "头孢" in dialogue_text:
+                allergy = "头孢过敏"
+            else:
+                allergy = "有过敏史（具体待查）"
 
-        # 构建结构化结果
-        chief_complaint = f"{','.join(body_parts) if body_parts else '颈部'}{','.join(symptoms) if symptoms else '疼痛'}{duration}"
+        # 提取既往史
+        past_history = "无特殊"
+        if diseases:
+            past_history = "、".join(diseases)
+        elif "之前" in dialogue_text and "没有" in dialogue_text:
+            past_history = "既往体健"
+
+        # 构建主诉
+        chief_complaint_parts = []
+        if body_parts:
+            chief_complaint_parts.append("、".join(body_parts))
+        if symptoms:
+            chief_complaint_parts.append("、".join(symptoms))
+        if duration:
+            chief_complaint_parts.append(duration)
+
+        chief_complaint = "，".join(chief_complaint_parts) if chief_complaint_parts else "不适"
+
+        # 构建现病史
+        present_illness = f"患者主诉{chief_complaint}。"
+        if duration and (symptoms or body_parts):
+            parts_desc = "、".join(body_parts) if body_parts else ""
+            symptoms_desc = "、".join(symptoms) if symptoms else ""
+            present_illness = f"患者主诉{duration}前出现{parts_desc}{symptoms_desc}。"
+
+        # 体格检查（仅记录对话中明确提到的）
+        physical_exam = "未提及"
+
+        # 初步诊断（如果对话中提到了疾病名称，记录下来）
+        preliminary_diagnosis = "待查"
+        if diseases:
+            preliminary_diagnosis = "、".join(diseases)
+
+        # 治疗方案（仅记录对话中提到的）
+        treatment_plan = "未提及"
 
         return {
             "chief_complaint": chief_complaint,
-            "present_illness_history": f"患者主诉{chief_complaint}。",
-            "past_medical_history": "既往体健",
+            "present_illness_history": present_illness,
+            "past_medical_history": past_history,
             "allergy_history": allergy,
-            "physical_examination": "颈部活动受限，压痛明显",
-            "preliminary_diagnosis": "颈椎病",
-            "treatment_plan": "建议进行颈椎X光检查，物理治疗"
+            "physical_examination": physical_exam,
+            "preliminary_diagnosis": preliminary_diagnosis,
+            "treatment_plan": treatment_plan
         }
 
     def get_extractor_name(self) -> str:

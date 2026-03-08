@@ -9,7 +9,7 @@ import logging
 from fastapi import APIRouter
 from app.core.response import success_response
 from app.core.config import settings
-from app.api.endpoints import health, system, sessions, master_data, asr, extract, documents, index, draft, clinical_hints
+from app.api.endpoints import health, system, sessions, master_data, asr, extract, documents, index, draft, clinical_hints, vocabulary
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +103,9 @@ api_router.include_router(draft.router, prefix="/draft", tags=["病历草稿"])
 
 # 注册临床提示路由
 api_router.include_router(clinical_hints.router, prefix="/clinical-hints", tags=["临床提示"])
+
+# 注册词库管理路由
+api_router.include_router(vocabulary.router, prefix="/vocabulary", tags=["词库管理"])
 
 
 # 后续阶段将在此注册更多路由

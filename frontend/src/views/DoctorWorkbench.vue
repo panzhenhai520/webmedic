@@ -36,6 +36,15 @@
                 <el-icon><Folder /></el-icon>
                 <span>病历管理</span>
               </el-menu-item>
+              <el-sub-menu index="maintenance">
+                <template #title>
+                  <el-icon><Setting /></el-icon>
+                  <span>系统维护</span>
+                </template>
+                <el-menu-item index="/vocabulary">医学词库</el-menu-item>
+                <el-menu-item index="/icd" disabled>ICD编码</el-menu-item>
+                <el-menu-item index="/surgery" disabled>手术编码</el-menu-item>
+              </el-sub-menu>
             </el-menu>
           </div>
           <div class="header-info">
@@ -107,7 +116,7 @@
 import { onMounted, ref, computed } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
-import { Notebook, House, Clock, Folder, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
+import { Notebook, House, Clock, Folder, Setting, ArrowLeft, ArrowRight } from '@element-plus/icons-vue'
 import { useWorkbenchStore } from '@/stores/workbench'
 import { getDefaultDoctor, getDefaultPatient } from '@/api'
 import PatientInfoCard from '@/components/workbench/PatientInfoCard.vue'
