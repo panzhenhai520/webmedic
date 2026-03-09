@@ -105,50 +105,48 @@ async def search_similar_cases(
             try:
                 file_path = os.path.join("medical_records", doc.file_name)
                 if os.path.exists(file_path):
-                    reader = PdfReader(file_path)
-                    full_content = "\n".join([page.extract_text() for page in reader.pages])
+                    # 使用 PyMuPDF 提取 PDF 内容（对中文支持更好）
+                    try:
+                        import fitz
+                        pdf_doc = fitz.open(file_path)
+                        full_content = ""
+                        for page in pdf_doc:
+                            full_content += page.get_text()
+                        pdf_doc.close()
+                    except ImportError:
+                        # 如果 PyMuPDF 未安装，回退到 pypdf
+                        reader = PdfReader(file_path)
+                        full_content = "\n".join([page.extract_text() for page in reader.pages])
+
                     content_preview = full_content[:800] + ("..." if len(full_content) > 800 else "")
 
-                    # 由于 PDF 编码问题，尝试多种方式提取
-                    lines = full_content.split('\n')
+                    # 按行分割
+                    lines = [line.strip() for line in full_content.split('\n') if line.strip()]
 
-                    # 方法1：查找包含"主诉"的行，取下一行
+                    # 查找主诉和现病史
+                    # 策略：在这个 PDF 中，内容在标签之前
+                    chief_idx = -1
+                    illness_idx = -1
+
                     for i, line in enumerate(lines):
-                        if '主诉' in line or 'chief' in line.lower():
-                            # 检查当前行是否包含内容
-                            parts = line.split(':', 1)
-                            if len(parts) > 1 and parts[1].strip():
-                                similar_chief_complaint = parts[1].strip()[:200]
-                            # 否则取下一行
-                            elif i + 1 < len(lines) and lines[i + 1].strip():
-                                similar_chief_complaint = lines[i + 1].strip()[:200]
-                            if similar_chief_complaint:
+                        if '主诉:' in line or '主诉：' in line:
+                            chief_idx = i
+                        if '现病史:' in line or '现病史：' in line:
+                            illness_idx = i
+
+                    # 提取主诉：查找"主诉:"标签之前的内容，找包含"天"或"日"的行
+                    if chief_idx > 0:
+                        for i in range(chief_idx - 1, max(0, chief_idx - 10), -1):
+                            if '天' in lines[i] or '日' in lines[i] or '疼痛' in lines[i] or '不适' in lines[i]:
+                                similar_chief_complaint = lines[i][:200]
                                 break
 
-                    # 方法2：查找包含"现病史"的行
-                    for i, line in enumerate(lines):
-                        if '现病史' in line or 'present' in line.lower():
-                            # 收集接下来的几行作为现病史
-                            illness_lines = []
-                            for j in range(i + 1, min(i + 5, len(lines))):
-                                if lines[j].strip() and not any(keyword in lines[j] for keyword in ['既往史', '过敏史', '体格检查', '诊断']):
-                                    illness_lines.append(lines[j].strip())
-                                elif any(keyword in lines[j] for keyword in ['既往史', '过敏史', '体格检查']):
-                                    break
-                            if illness_lines:
-                                similar_present_illness = ' '.join(illness_lines)[:300]
+                    # 提取现病史：查找"现病史:"标签之前的内容
+                    if illness_idx > 0:
+                        for i in range(illness_idx - 1, max(0, illness_idx - 10), -1):
+                            if '患者' in lines[i] and len(lines[i]) > 20:
+                                similar_present_illness = lines[i][:300]
                                 break
-
-                    # 如果还是没有找到，尝试使用正则（处理编码问题）
-                    if not similar_chief_complaint:
-                        # 尝试查找数字+天/日的模式（通常是主诉）
-                        time_pattern = re.search(r'(\d+[天日])', full_content)
-                        if time_pattern:
-                            # 获取这个模式前后的文本
-                            pos = time_pattern.start()
-                            start = max(0, pos - 50)
-                            end = min(len(full_content), pos + 50)
-                            similar_chief_complaint = full_content[start:end].strip()[:200]
 
             except Exception as e:
                 content_preview = f"无法读取文档内容: {str(e)}"
