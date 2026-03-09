@@ -22,7 +22,25 @@ async def rebuild_index(db: Session = Depends(get_db)):
     对所有待索引的文档执行索引操作
     """
     try:
-        total_documents, indexed_count = IndexService.rebuild_index(db)
+        from app.services.index_service import get_index_service
+        from app.models.medical_document import MedicalDocument
+
+        # 获取索引服务
+        index_service = await get_index_service()
+
+        # 查询所有文档（不限制状态，因为索引过程会自动解析PDF）
+        documents = db.query(MedicalDocument).all()
+
+        total_documents = len(documents)
+        indexed_count = 0
+
+        # 索引每个文档
+        for doc in documents:
+            try:
+                await index_service.index_document(db, doc.id)
+                indexed_count += 1
+            except Exception as e:
+                print(f"Failed to index document {doc.id}: {e}")
 
         return success_response(
             data={
@@ -47,26 +65,111 @@ async def search_similar_cases(
     根据当前会话的结构化记录检索最相似的病历文档
     """
     try:
-        matches = IndexService.search_similar_cases(
+        from app.services.index_service import get_index_service
+        from app.models.structured_record import StructuredRecord
+        from pypdf import PdfReader
+        import os
+        import re
+
+        # 获取索引服务实例
+        index_service = await get_index_service()
+
+        matches = await index_service.search_similar_cases(
             db=db,
             session_id=session_id,
             top_k=top_k
         )
 
-        # 获取匹配结果和文档信息
-        match_results = IndexService.get_similar_cases_by_session(db, session_id)
+        # 获取当前会话的结构化记录
+        current_record = db.query(StructuredRecord).filter(
+            StructuredRecord.session_id == session_id
+        ).order_by(StructuredRecord.created_at.desc()).first()
 
-        # 转换为响应格式
-        match_list = [
-            SimilarCaseMatchSchema(
-                document_id=match.document_id,
-                file_name=doc.file_name,
-                score=match.score,
-                reason_text=match.reason_text,
-                rank_no=match.rank_no
+        current_chief_complaint = ""
+        current_present_illness = ""
+        if current_record:
+            current_chief_complaint = current_record.chief_complaint or ""
+            current_present_illness = current_record.present_illness or ""
+
+        # 获取匹配结果和文档信息
+        match_results = index_service.get_similar_cases_by_session(db, session_id)
+
+        # 转换为响应格式，添加结构化对比数据
+        match_list = []
+        for match, doc in match_results:
+            # 读取 PDF 内容
+            content_preview = ""
+            similar_chief_complaint = ""
+            similar_present_illness = ""
+
+            try:
+                file_path = os.path.join("medical_records", doc.file_name)
+                if os.path.exists(file_path):
+                    reader = PdfReader(file_path)
+                    full_content = "\n".join([page.extract_text() for page in reader.pages])
+                    content_preview = full_content[:800] + ("..." if len(full_content) > 800 else "")
+
+                    # 由于 PDF 编码问题，尝试多种方式提取
+                    lines = full_content.split('\n')
+
+                    # 方法1：查找包含"主诉"的行，取下一行
+                    for i, line in enumerate(lines):
+                        if '主诉' in line or 'chief' in line.lower():
+                            # 检查当前行是否包含内容
+                            parts = line.split(':', 1)
+                            if len(parts) > 1 and parts[1].strip():
+                                similar_chief_complaint = parts[1].strip()[:200]
+                            # 否则取下一行
+                            elif i + 1 < len(lines) and lines[i + 1].strip():
+                                similar_chief_complaint = lines[i + 1].strip()[:200]
+                            if similar_chief_complaint:
+                                break
+
+                    # 方法2：查找包含"现病史"的行
+                    for i, line in enumerate(lines):
+                        if '现病史' in line or 'present' in line.lower():
+                            # 收集接下来的几行作为现病史
+                            illness_lines = []
+                            for j in range(i + 1, min(i + 5, len(lines))):
+                                if lines[j].strip() and not any(keyword in lines[j] for keyword in ['既往史', '过敏史', '体格检查', '诊断']):
+                                    illness_lines.append(lines[j].strip())
+                                elif any(keyword in lines[j] for keyword in ['既往史', '过敏史', '体格检查']):
+                                    break
+                            if illness_lines:
+                                similar_present_illness = ' '.join(illness_lines)[:300]
+                                break
+
+                    # 如果还是没有找到，尝试使用正则（处理编码问题）
+                    if not similar_chief_complaint:
+                        # 尝试查找数字+天/日的模式（通常是主诉）
+                        time_pattern = re.search(r'(\d+[天日])', full_content)
+                        if time_pattern:
+                            # 获取这个模式前后的文本
+                            pos = time_pattern.start()
+                            start = max(0, pos - 50)
+                            end = min(len(full_content), pos + 50)
+                            similar_chief_complaint = full_content[start:end].strip()[:200]
+
+            except Exception as e:
+                content_preview = f"无法读取文档内容: {str(e)}"
+                similar_chief_complaint = f"解析错误: {str(e)}"
+                similar_present_illness = f"解析错误: {str(e)}"
+
+            match_list.append(
+                SimilarCaseMatchSchema(
+                    document_id=match.document_id,
+                    file_name=doc.file_name,
+                    score=match.score,
+                    reason_text=match.reason_text,
+                    rank_no=match.rank_no,
+                    content_preview=content_preview,
+                    query_text=f"{current_chief_complaint}\n{current_present_illness}",
+                    current_chief_complaint=current_chief_complaint,
+                    current_present_illness=current_present_illness,
+                    similar_chief_complaint=similar_chief_complaint or "未能从PDF中提取",
+                    similar_present_illness=similar_present_illness or "未能从PDF中提取"
+                )
             )
-            for match, doc in match_results
-        ]
 
         response_data = SearchSimilarResponse(
             session_id=session_id,
@@ -94,7 +197,12 @@ async def get_similar_cases(
     获取会话的相似病历匹配结果
     """
     try:
-        match_results = IndexService.get_similar_cases_by_session(db, session_id)
+        from app.services.index_service import get_index_service
+
+        # 获取索引服务实例
+        index_service = await get_index_service()
+
+        match_results = index_service.get_similar_cases_by_session(db, session_id)
 
         # 转换为响应格式
         match_list = [

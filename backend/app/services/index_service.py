@@ -70,31 +70,56 @@ class IndexService:
             if not document:
                 raise ValueError(f"Document not found: {document_id}")
 
-            if not document.parsed_content:
-                raise ValueError(f"Document has no parsed content: {document_id}")
+            # 从 PDF 文件中提取文本
+            import os
+            if not os.path.exists(document.file_path):
+                raise ValueError(f"Document file not found: {document.file_path}")
+
+            # 解析 PDF 内容
+            try:
+                from pypdf import PdfReader
+                with open(document.file_path, 'rb') as file:
+                    pdf_reader = PdfReader(file)
+                    text_content = ""
+                    for page in pdf_reader.pages:
+                        text_content += page.extract_text()
+
+                if not text_content or len(text_content.strip()) < 10:
+                    raise ValueError(f"Document has no valid content: {document_id}")
+
+            except Exception as e:
+                logger.error(f"Failed to parse PDF {document.file_path}: {e}")
+                document.parse_status = "failed"
+                document.index_status = "failed"
+                db.commit()
+                raise ValueError(f"Failed to parse PDF: {e}")
 
             # 生成向量
-            text = document.parsed_content
-            vector = self.embedding_service.encode_single(text)
+            vector = self.embedding_service.encode_single(text_content)
 
             # 构建元数据
             payload = {
                 "document_id": document.id,
                 "file_name": document.file_name,
                 "file_path": document.file_path,
-                "parsed_content": document.parsed_content[:500],  # 只存储前500字符
-                "upload_time": document.upload_time.isoformat() if document.upload_time else None,
+                "parsed_content": text_content[:500],  # 只存储前500字符
+                "created_at": document.created_at.isoformat() if document.created_at else None,
             }
 
             # 插入向量数据库
+            # 使用 UUID 格式的 ID（Qdrant 要求）
+            import uuid
+            point_id = str(uuid.UUID(int=document.id, version=4))
+
             await self.vector_db.upsert_vectors(
                 collection_name=self.collection_name,
-                ids=[str(document.id)],
+                ids=[point_id],
                 vectors=[vector],
                 payloads=[payload]
             )
 
-            # 更新文档索引状态
+            # 更新文档状态
+            document.parse_status = "done"
             document.index_status = "done"
             db.commit()
 
@@ -186,11 +211,11 @@ class IndexService:
             # 构建查询文本
             query_text = f"{structured_record.chief_complaint} {structured_record.present_illness}"
 
-            # 搜索相似文档
+            # 搜索相似文档（降低阈值以适应 Mock 数据）
             similar_docs = await self.search_similar_documents(
                 query_text=query_text,
                 limit=top_k,
-                score_threshold=0.7
+                score_threshold=0.5
             )
 
             # 删除该会话的旧匹配记录
@@ -234,10 +259,13 @@ class IndexService:
             document_id: 文档ID
         """
         try:
-            # 从向量数据库删除
+            # 从向量数据库删除（使用 UUID 格式）
+            import uuid
+            point_id = str(uuid.UUID(int=document_id, version=4))
+
             await self.vector_db.delete_vectors(
                 collection_name=self.collection_name,
-                ids=[str(document_id)]
+                ids=[point_id]
             )
 
             # 更新文档索引状态
@@ -314,3 +342,86 @@ async def get_index_service() -> IndexService:
         _index_service = IndexService()
         await _index_service.initialize()
     return _index_service
+
+
+# 同步包装方法（用于非异步上下文）
+class IndexServiceSync:
+    """索引服务的同步包装器"""
+
+    @staticmethod
+    def index_single_document(db: Session, document_id: int) -> None:
+        """
+        同步索引单个文档
+
+        Args:
+            db: 数据库会话
+            document_id: 文档ID
+        """
+        import asyncio
+
+        async def _index():
+            service = await get_index_service()
+            await service.index_document(db, document_id)
+
+        try:
+            # 在新的事件循环中运行
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(_index())
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"Failed to index document {document_id}: {e}")
+            raise
+
+    @staticmethod
+    def rebuild_index(db: Session) -> tuple[int, int]:
+        """
+        同步重建索引
+
+        Args:
+            db: 数据库会话
+
+        Returns:
+            (总文档数, 成功索引数)
+        """
+        import asyncio
+        from app.models.medical_document import MedicalDocument
+
+        async def _rebuild():
+            service = await get_index_service()
+
+            # 查询所有已解析的文档
+            documents = db.query(MedicalDocument).filter(
+                MedicalDocument.parse_status == "done"
+            ).all()
+
+            total = len(documents)
+            indexed = 0
+
+            for doc in documents:
+                try:
+                    await service.index_document(db, doc.id)
+                    indexed += 1
+                except Exception as e:
+                    logger.error(f"Failed to index document {doc.id}: {e}")
+
+            return total, indexed
+
+        try:
+            # 在新的事件循环中运行
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            try:
+                return loop.run_until_complete(_rebuild())
+            finally:
+                loop.close()
+        except Exception as e:
+            logger.error(f"Failed to rebuild index: {e}")
+            raise
+
+
+# 为了向后兼容，创建一个别名
+IndexService.index_single_document = IndexServiceSync.index_single_document
+IndexService.rebuild_index = IndexServiceSync.rebuild_index
