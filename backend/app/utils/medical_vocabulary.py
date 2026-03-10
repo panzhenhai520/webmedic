@@ -184,6 +184,7 @@ TIME_PATTERNS = [
 def extract_body_parts(text: str) -> list:
     """
     从文本中提取身体部位（包含方位）
+    方位只在与部位紧邻时才组合，避免将时间词中的"前"误识别为方位
 
     Args:
         text: 输入文本
@@ -191,27 +192,26 @@ def extract_body_parts(text: str) -> list:
     Returns:
         提取到的身体部位列表
     """
+    import re
     found_parts = []
 
-    # 先提取方位
-    directions_found = []
-    for direction, keywords in DIRECTIONS.items():
-        for keyword in keywords:
-            if keyword in text:
-                directions_found.append(direction)
-                break
+    # 方位词列表（只匹配明确的方位短语，不匹配单独的"前"等模糊字符）
+    direction_patterns = ["左侧", "右侧", "左边", "右边", "上方", "下方", "前方", "后方", "内侧", "外侧"]
 
-    # 再提取部位
+    # 提取部位：直接从文本中找部位关键词，不强制组合方位
     for part, keywords in BODY_PARTS.items():
         for keyword in keywords:
             if keyword in text:
-                # 组合方位和部位
-                if directions_found:
-                    for direction in directions_found:
-                        combined = f"{direction}{part}"
+                # 检查该部位前是否紧跟明确方位词（如"左侧颈部"）
+                prefixed = False
+                for dir_pat in direction_patterns:
+                    if dir_pat + keyword in text:
+                        combined = f"{dir_pat.rstrip('侧边方')}{part}"
                         if combined not in found_parts:
                             found_parts.append(combined)
-                else:
+                        prefixed = True
+                        break
+                if not prefixed:
                     if part not in found_parts:
                         found_parts.append(part)
                 break
