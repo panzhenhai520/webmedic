@@ -96,9 +96,6 @@ class LLMService:
 
         # 根据 prompt 内容返回不同的 mock 数据
         if "结构化" in prompt or "病历" in prompt:
-            # 提取对话文本（在 prompt 中查找对话部分）
-            dialogue_text = prompt
-
             # 初始化结果
             result = {
                 "chief_complaint": "未提及",
@@ -111,147 +108,166 @@ class LLMService:
                 "warning_flags": "未提及"
             }
 
-            # 1. 提取主诉部位和症状
+            # 从 prompt 中精确提取对话行（只取 patient:/doctor: 开头的行）
+            # 这样可以避免 prompt 说明文字中的词汇干扰匹配
+            patient_lines = []
+            doctor_lines = []
+            for line in prompt.split('\n'):
+                stripped = line.strip()
+                if stripped.startswith('patient:'):
+                    patient_lines.append(stripped[len('patient:'):].strip())
+                elif stripped.startswith('doctor:'):
+                    doctor_lines.append(stripped[len('doctor:'):].strip())
+
+            patient_text = ' '.join(patient_lines)
+            doctor_text = ' '.join(doctor_lines)
+
+            logger.info(f"Mock提取 - 患者发言({len(patient_lines)}条): {patient_text[:100]}")
+            logger.info(f"Mock提取 - 医生发言({len(doctor_lines)}条): {doctor_text[:100]}")
+
+            # 如果没有提取到对话行，说明格式不符，回退为空（不能用整个prompt，否则会误匹配）
+            if not patient_lines and not doctor_lines:
+                logger.warning("未能从prompt中识别到对话行，使用空文本")
+                patient_text = ""
+                doctor_text = ""
+
+            # 症状关键词（只从患者发言中提取）
+            symptom_keywords = {
+                "疼痛": "疼痛", "头痛": "头痛", "头晕": "头晕", "眩晕": "眩晕",
+                "恶心": "恶心", "呕吐": "呕吐", "咳嗽": "咳嗽",
+                "发烧": "发热", "发热": "发热", "乏力": "乏力",
+                "无力": "无力", "不舒服": "不适", "酸痛": "酸痛", "胀痛": "胀痛",
+                "疼": "疼痛", "晕": "头晕", "痛": "疼痛"
+            }
+
+            # 部位关键词（只从患者发言中提取）
+            body_part_keywords = {
+                "颈部": "颈部", "脖子": "颈部", "颈椎": "颈椎",
+                "头部": "头部", "肩部": "肩部", "背部": "背部",
+                "腰部": "腰部", "腿部": "腿部", "胸部": "胸部",
+                "腹部": "腹部", "肚子": "腹部", "手部": "手部",
+                "脚部": "足部", "膝关节": "膝关节", "腰": "腰部",
+                "背": "背部", "头": "头部", "颈": "颈部"
+            }
+
+            # 1. 只从患者发言提取症状和部位
             symptoms = []
             body_parts = []
 
-            # 常见症状关键词
-            symptom_keywords = {
-                "痛": "疼痛", "疼": "疼痛", "酸": "酸痛", "胀": "胀痛",
-                "晕": "头晕", "眩晕": "眩晕", "恶心": "恶心", "呕吐": "呕吐",
-                "咳嗽": "咳嗽", "发烧": "发热", "发热": "发热",
-                "乏力": "乏力", "无力": "无力", "不舒服": "不适"
-            }
-
-            # 常见部位关键词
-            body_part_keywords = {
-                "头": "头部", "颈": "颈部", "脖子": "颈部", "颈椎": "颈椎",
-                "肩": "肩部", "背": "背部", "腰": "腰部", "腿": "腿部",
-                "胸": "胸部", "腹": "腹部", "肚子": "腹部",
-                "手": "手部", "脚": "足部", "膝": "膝关节"
-            }
-
             for keyword, symptom in symptom_keywords.items():
-                if keyword in dialogue_text:
+                if keyword in patient_text:
                     if symptom not in symptoms:
                         symptoms.append(symptom)
 
             for keyword, part in body_part_keywords.items():
-                if keyword in dialogue_text:
+                if keyword in patient_text:
                     if part not in body_parts:
                         body_parts.append(part)
 
-            # 2. 提取时间（天数）
+            # 2. 只从患者发言提取时间
             days = None
-            # 匹配 "X天"、"X日"
             day_patterns = [
+                r'([一二三四五六七八九十百]+)\s*天',
                 r'(\d+)\s*天',
                 r'(\d+)\s*日',
-                r'([一二三四五六七八九十]+)\s*天'
             ]
-
-            # 中文数字转阿拉伯数字
             chinese_numbers = {
                 '一': 1, '二': 2, '三': 3, '四': 4, '五': 5,
-                '六': 6, '七': 7, '八': 8, '九': 9, '十': 10
+                '六': 6, '七': 7, '八': 8, '九': 9, '十': 10,
+                '三四': 3
             }
 
             for pattern in day_patterns:
-                matches = re.findall(pattern, dialogue_text)
+                matches = re.findall(pattern, patient_text)
                 if matches:
-                    last_match = matches[-1]  # 取最后一次提到的天数
+                    last_match = matches[-1]
                     if last_match.isdigit():
                         days = int(last_match)
                     elif last_match in chinese_numbers:
                         days = chinese_numbers[last_match]
+                    break
 
-            # 3. 提取过敏史
-            allergy_keywords = ["过敏", "不能吃", "不能用"]
+            # 3. 过敏史（从患者发言提取）
             allergy_items = []
-
-            if any(keyword in dialogue_text for keyword in allergy_keywords):
-                # 常见过敏原
-                allergens = ["青霉素", "头孢", "磺胺", "海鲜", "花生", "鸡蛋", "牛奶"]
+            allergens = ["青霉素", "头孢", "磺胺", "海鲜", "花生", "鸡蛋", "牛奶"]
+            if any(k in patient_text for k in ["过敏", "不能吃", "不能用"]):
                 for allergen in allergens:
-                    if allergen in dialogue_text:
+                    if allergen in patient_text:
                         allergy_items.append(allergen)
 
-            # 4. 提取既往史
-            past_history_keywords = {
+            # 4. 既往史（从患者发言提取）
+            past_keywords = {
                 "高血压": "高血压", "糖尿病": "糖尿病", "心脏病": "心脏病",
-                "肝炎": "肝炎", "肾病": "肾病", "手术": "手术史"
+                "肝炎": "肝炎", "肾病": "肾病", "手术": "手术史",
+                "颈椎病": "颈椎病", "颈椎": "颈椎病"
             }
-
             past_history_items = []
-            for keyword, disease in past_history_keywords.items():
-                if keyword in dialogue_text:
+            for keyword, disease in past_keywords.items():
+                if keyword in patient_text:
                     past_history_items.append(disease)
 
-            # 5. 构建主诉
-            if body_parts and symptoms:
-                chief_complaint = f"{body_parts[0]}{symptoms[0]}"
-                if days:
-                    chief_complaint += f"{days}天"
-                result["chief_complaint"] = chief_complaint
-            elif symptoms:
-                chief_complaint = symptoms[0]
-                if days:
-                    chief_complaint += f"{days}天"
-                result["chief_complaint"] = chief_complaint
+            # 5. 体格检查（从医生发言提取）
+            physical_exam_parts = []
+            physical_keywords = ["血压", "心率", "体温", "听诊", "压痛", "活动受限", "肌肉紧张", "mmHg", "次/分"]
+            for line in doctor_lines:
+                if any(kw in line for kw in physical_keywords):
+                    physical_exam_parts.append(line)
+            if physical_exam_parts:
+                result["physical_exam"] = "；".join(physical_exam_parts)
 
-            # 6. 构建现病史
-            if result["chief_complaint"] != "未提及":
-                present_illness_parts = []
+            # 6. 初步诊断（从医生发言提取）
+            diagnosis_keywords = ["诊断为", "初步诊断", "考虑", "可能是", "可能为"]
+            for line in doctor_lines:
+                for kw in diagnosis_keywords:
+                    if kw in line:
+                        idx = line.find(kw) + len(kw)
+                        diagnosis = line[idx:].strip().rstrip('。，,.')[:30]
+                        if diagnosis:
+                            result["preliminary_diagnosis"] = diagnosis
+                            break
 
-                if days:
-                    present_illness_parts.append(f"患者{days}天前")
-                else:
-                    present_illness_parts.append("患者近期")
-
-                present_illness_parts.append("出现")
-
+            # 7. 构建主诉（去重，只用患者提到的内容）
+            if body_parts or symptoms:
+                parts = []
                 if body_parts:
-                    present_illness_parts.append(body_parts[0])
-
+                    parts.append(body_parts[0])
                 if symptoms:
-                    present_illness_parts.append("、".join(symptoms))
+                    parts.append(symptoms[0])
+                chief = "、".join(parts)
+                if days:
+                    chief += f"{days}天"
+                result["chief_complaint"] = chief
 
-                # 添加其他症状描述
-                if "加重" in dialogue_text or "严重" in dialogue_text:
-                    present_illness_parts.append("，症状逐渐加重")
-
-                if "缓解" in dialogue_text or "好转" in dialogue_text:
-                    present_illness_parts.append("，休息后稍有缓解")
-
-                result["present_illness"] = "".join(present_illness_parts) + "。"
-
-            # 7. 过敏史
-            if allergy_items:
-                result["allergy_history"] = f"对{' '.join(allergy_items)}过敏"
-            else:
-                if "过敏" in dialogue_text and "没有" in dialogue_text:
-                    result["allergy_history"] = "无药物过敏史"
-
-            # 8. 既往史
-            if past_history_items:
-                result["past_history"] = f"既往有{' '.join(past_history_items)}"
-            else:
-                if "既往" in dialogue_text or "以前" in dialogue_text:
-                    if "健康" in dialogue_text or "没有" in dialogue_text:
-                        result["past_history"] = "既往体健，否认慢性病史"
-
-            # 9. 初步诊断（基于症状和部位）
-            if body_parts and symptoms:
-                if "颈" in body_parts[0] and "疼痛" in symptoms:
-                    result["preliminary_diagnosis"] = "颈椎病"
-                elif "头" in body_parts[0] and "痛" in symptoms[0]:
-                    result["preliminary_diagnosis"] = "头痛待查"
-                elif "腹" in body_parts[0] and "痛" in symptoms[0]:
-                    result["preliminary_diagnosis"] = "腹痛待查"
+            # 8. 构建现病史
+            if result["chief_complaint"] != "未提及":
+                illness_parts = []
+                if days:
+                    illness_parts.append(f"患者{days}天前出现")
                 else:
-                    result["preliminary_diagnosis"] = f"{body_parts[0]}疾病待查"
+                    illness_parts.append("患者近期出现")
+                if body_parts:
+                    illness_parts.append(body_parts[0])
+                if symptoms:
+                    illness_parts.append("、".join(symptoms))
+                if "加重" in patient_text or "严重" in patient_text:
+                    illness_parts.append("，症状加重")
+                if "睡眠" in patient_text and ("差" in patient_text or "不好" in patient_text):
+                    illness_parts.append("，伴睡眠欠佳")
+                result["present_illness"] = "".join(illness_parts) + "。"
 
-            # 10. 建议检查
+            # 9. 过敏史
+            if allergy_items:
+                result["allergy_history"] = f"对{'、'.join(allergy_items)}过敏"
+            elif "没有过敏" in patient_text or "不过敏" in patient_text:
+                result["allergy_history"] = "无药物过敏史"
+
+            # 10. 既往史
+            if past_history_items:
+                result["past_history"] = f"既往有{'、'.join(list(dict.fromkeys(past_history_items)))}"
+            elif "没有" in patient_text and ("病史" in patient_text or "慢性" in patient_text):
+                result["past_history"] = "既往体健"
+
+            # 11. 建议检查
             if result["preliminary_diagnosis"] != "未提及":
                 if "颈椎" in result["preliminary_diagnosis"]:
                     result["suggested_exams"] = "颈椎X光片或CT、血常规"
