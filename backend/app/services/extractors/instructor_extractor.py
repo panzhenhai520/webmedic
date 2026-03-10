@@ -6,8 +6,7 @@ from typing import Dict, Any
 
 from app.services.llm_service import LLMService
 from app.utils.medical_vocabulary import (
-    extract_body_parts,
-    extract_symptoms,
+    extract_complaint_pairs,
     extract_diseases,
     extract_duration
 )
@@ -77,10 +76,15 @@ class InstructorExtractor(BaseExtractor):
         logger.info(f"Mock提取 - 患者发言({len(patient_lines)}条): {patient_text[:100]}")
         logger.info(f"Mock提取 - 医生发言({len(doctor_lines)}条): {doctor_text[:100]}")
 
-        # 只从患者发言提取症状、部位、时长
-        body_parts = extract_body_parts(patient_text) if patient_text else []
-        symptoms = extract_symptoms(patient_text) if patient_text else []
+        # 使用主谓配对提取，避免单字误匹配（如"恶心"→心脏、"头晕"→头部）
+        pairs, standalone_symptoms, standalone_body_parts = (
+            extract_complaint_pairs(patient_text) if patient_text else ([], [], [])
+        )
         duration = extract_duration(patient_text) if patient_text else ""
+
+        # 为后续现病史/日志使用，展开所有部位和症状
+        body_parts = [bp for bp, _ in pairs] + standalone_body_parts
+        symptoms = [sym for _, sym in pairs] + standalone_symptoms
 
         # 只从医生发言提取疾病诊断
         diseases = extract_diseases(doctor_text) if doctor_text else []
@@ -124,16 +128,18 @@ class InstructorExtractor(BaseExtractor):
         if preliminary_diagnosis == "待查" and diseases:
             preliminary_diagnosis = "、".join(diseases)
 
-        # 构建主诉（只用患者提到的部位和症状）
-        chief_complaint_parts = []
-        if body_parts:
-            chief_complaint_parts.append("、".join(body_parts))
-        if symptoms:
-            chief_complaint_parts.append("、".join(symptoms))
-        if duration:
-            chief_complaint_parts.append(duration)
+        # 构建主诉：主语+谓语形式（"颈部疼痛"），避免部位与症状割裂
+        complaint_items = []
+        for bp, sym in pairs:
+            complaint_items.append(f"{bp}{sym}")       # e.g. "颈部疼痛"
+        for sym in standalone_symptoms:
+            complaint_items.append(sym)                # e.g. "头晕"、"恶心"、"失眠"
+        for bp in standalone_body_parts:
+            complaint_items.append(f"{bp}不适")        # 有部位但无对应症状
 
-        chief_complaint = "，".join(chief_complaint_parts) if chief_complaint_parts else "不适"
+        chief_complaint = "，".join(complaint_items) if complaint_items else "不适"
+        if duration:
+            chief_complaint += f"，持续约{duration}"
 
         # 构建现病史
         present_illness = f"患者主诉{chief_complaint}。"

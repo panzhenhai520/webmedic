@@ -16,16 +16,17 @@ class EmbeddingService:
 
     def __init__(self):
         self.model: Optional[BGEM3FlagModel] = None
-        self.model_name = settings.EMBEDDING_MODEL
+        # 优先使用本地路径，如果没有设置则使用模型名称
+        self.model_name_or_path = settings.EMBEDDING_MODEL_PATH or settings.EMBEDDING_MODEL
         self.device = settings.EMBEDDING_DEVICE
         self.batch_size = settings.EMBEDDING_BATCH_SIZE
 
     def initialize(self) -> None:
         """初始化嵌入模型"""
         try:
-            logger.info(f"Loading embedding model: {self.model_name}")
+            logger.info(f"Loading embedding model: {self.model_name_or_path}")
             self.model = BGEM3FlagModel(
-                self.model_name,
+                self.model_name_or_path,
                 use_fp16=False if self.device == "cpu" else True
             )
             logger.info(f"Embedding model loaded on {self.device}")

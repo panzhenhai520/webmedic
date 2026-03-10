@@ -57,7 +57,13 @@ async def upload_document(
         document = DocumentService.register_document(db, file_path)
 
         # 自动索引
-        IndexService.index_single_document(db, document.id)
+        if document.parse_status == "done":
+            from app.services.index_service import get_index_service
+            try:
+                index_service = await get_index_service()
+                await index_service.index_document(db, document.id)
+            except Exception as e:
+                print(f"Failed to index document {document.id}: {e}")
 
         # 转换为响应格式
         document_info = DocumentInfo(
@@ -97,8 +103,25 @@ async def scan_local_directory(
         )
 
         # 自动索引新添加的文档
+        indexed_count = 0
         if new_added > 0:
-            IndexService.rebuild_index(db)
+            from app.services.index_service import get_index_service
+
+            # 获取索引服务
+            index_service = await get_index_service()
+
+            # 索引所有新添加的文档（不限制状态）
+            for doc in documents:
+                # 只索引新添加的文档（已存在的跳过）
+                if doc.index_status == "pending":
+                    try:
+                        await index_service.index_document(db, doc.id)
+                        indexed_count += 1
+                        print(f"Indexed document {doc.id}: {doc.file_name}")
+                    except Exception as e:
+                        print(f"Failed to index document {doc.id}: {e}")
+
+            print(f"Total indexed: {indexed_count} documents")
 
         # 转换为响应格式
         document_infos = [
@@ -125,7 +148,7 @@ async def scan_local_directory(
 
         return success_response(
             data=response_data.model_dump(),
-            message=f"扫描完成，发现 {total_found} 个文件，新增 {new_added} 个，已存在 {already_exists} 个，已自动索引"
+            message=f"扫描完成，发现 {total_found} 个文件，新增 {new_added} 个，已存在 {already_exists} 个，已索引 {indexed_count} 个"
         )
 
     except ValueError as e:
@@ -199,3 +222,49 @@ async def view_document(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"查看文档失败: {str(e)}")
+
+
+@router.delete("/{document_id}", response_model=dict)
+async def delete_document(
+    document_id: int,
+    db: Session = Depends(get_db)
+):
+    """
+    删除文档
+    从数据库和向量数据库中删除文档记录
+    """
+    try:
+        from app.models.similar_case_match import SimilarCaseMatch
+
+        # 获取文档信息
+        document = DocumentService.get_document_by_id(db, document_id)
+
+        if not document:
+            return error_response(message=f"文档 ID {document_id} 不存在")
+
+        # 1. 删除相关的相似病历匹配记录（外键约束）
+        db.query(SimilarCaseMatch).filter(
+            SimilarCaseMatch.document_id == document_id
+        ).delete()
+        db.commit()
+
+        # 2. 从向量数据库删除索引
+        try:
+            from app.services.index_service import get_index_service
+            index_service = await get_index_service()
+            await index_service.delete_document_index(db, document_id)
+        except Exception as e:
+            print(f"Failed to delete index for document {document_id}: {e}")
+
+        # 3. 从数据库删除文档记录
+        db.delete(document)
+        db.commit()
+
+        return success_response(
+            data={"document_id": document_id},
+            message=f"文档删除成功"
+        )
+
+    except Exception as e:
+        db.rollback()
+        return error_response(message=f"删除文档失败: {str(e)}")

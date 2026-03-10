@@ -107,6 +107,18 @@ class QdrantVectorDB(BaseVectorDB):
             logger.error(f"Failed to check collection existence: {e}")
             return False
 
+    async def delete_collection(self, collection_name: str) -> None:
+        """删除集合"""
+        if not self.client:
+            raise RuntimeError("Qdrant client not initialized")
+
+        try:
+            self.client.delete_collection(collection_name=collection_name)
+            logger.info(f"Collection deleted: {collection_name}")
+        except Exception as e:
+            logger.error(f"Failed to delete collection: {e}")
+            raise
+
     async def upsert_vectors(
         self,
         collection_name: str,

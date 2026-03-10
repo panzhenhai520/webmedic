@@ -112,7 +112,11 @@ class Settings(BaseSettings):
     # 嵌入模型配置
     EMBEDDING_MODEL: str = Field(
         default="BAAI/bge-m3",
-        description="嵌入模型名称"
+        description="嵌入模型名称或本地路径"
+    )
+    EMBEDDING_MODEL_PATH: str = Field(
+        default="",
+        description="本地模型路径（如果设置，优先使用本地路径）"
     )
     EMBEDDING_DEVICE: str = Field(
         default="cpu",
